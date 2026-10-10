@@ -135,19 +135,37 @@ h1,h2,h3{font-family:var(--font-display);margin:0}
 .seat-row{display:grid;grid-template-columns:repeat(3,1fr) 16px repeat(3,1fr);gap:4px;margin-bottom:4px;align-items:center}
 .seat{
   aspect-ratio:1;border-radius:7px 7px 3px 3px;border:1px solid var(--navy-line);
-  background:var(--navy-raised);display:flex;align-items:center;justify-content:center;
+  background:var(--navy-raised);display:flex;flex-direction:column;align-items:center;justify-content:center;
   font-family:var(--font-mono);font-size:9px;color:var(--ink-dim);cursor:pointer;
   transition:transform .12s ease, border-color .12s ease;
+  overflow:hidden;
 }
 .seat:hover:not(.taken):not(.mine){transform:translateY(-2px)}
 .seat.aya{border-color:rgba(227,183,168,.35)}
 .seat.aya:hover:not(.taken):not(.mine){border-color:var(--aya)}
 .seat.yousef{border-color:rgba(143,176,214,.35)}
 .seat.yousef:hover:not(.taken):not(.mine){border-color:var(--yousef)}
-.seat.taken{cursor:not-allowed;background:var(--navy);color:var(--navy-line);border-style:dashed}
+.seat.taken{cursor:not-allowed;background:var(--navy)}
 .seat.mine{cursor:default;color:#2a1d07;font-weight:700}
 .seat.aya.mine{background:linear-gradient(180deg,var(--aya),#c98f7c);border-color:var(--aya)}
 .seat.yousef.mine{background:linear-gradient(180deg,var(--yousef),#6a8dbd);border-color:var(--yousef)}
+
+/* chic "named badge" look for a booked seat — the guest's initial in a
+   small lettered medallion, with their first name fading in beneath it. */
+.seat .seat-initial{
+  font-family:var(--font-display);font-weight:700;font-size:11px;line-height:1;
+}
+.seat .seat-code{font-size:6px;letter-spacing:.03em;margin-top:1px;opacity:.7}
+.seat .seat-firstname{
+  font-family:var(--font-body);font-size:5.5px;font-weight:600;letter-spacing:.02em;
+  margin-top:1px;max-width:92%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  text-transform:uppercase;
+}
+.seat.taken .seat-initial{color:var(--ink-dim)}
+.seat.taken .seat-firstname{color:var(--ink-dim);opacity:.75}
+.seat.aya.taken{border-color:rgba(227,183,168,.5)}
+.seat.yousef.taken{border-color:rgba(143,176,214,.5)}
+.seat.mine .seat-firstname{color:#2a1d07;opacity:.85}
 .cockpit-seats{
   display:flex;justify-content:center;gap:10px;
   padding-bottom:16px;margin-bottom:14px;border-bottom:1px dashed var(--navy-line);
@@ -458,7 +476,7 @@ function buildSeatButton(id, side){
   btn.dataset.id = id;
   const parts = id.split('-');
   const label = parts[1].replace('r','') + parts[2].replace('s','').replace('1','A').replace('2','B').replace('3','C');
-  btn.textContent = label;
+  btn.dataset.label = label;
   btn.addEventListener('click', function(){ trySelectSeat(id, side); });
   return btn;
 }
@@ -468,11 +486,33 @@ function buildPilotSeat(id, side, displayName){
   const btn = document.createElement('div');
   btn.className = 'seat pilot ' + side;
   btn.dataset.id = id;
-  btn.innerHTML = '<span style="display:block;font-size:13px;line-height:1">✈</span>'
-    + '<span style="display:block;font-size:6.5px;letter-spacing:.04em;margin-top:3px;white-space:nowrap">'+displayName+'</span>';
-  btn.title = displayName + "'s seat";
+  btn.dataset.pilotLabel = displayName;
   btn.addEventListener('click', function(){ trySelectSeat(id, side); });
   return btn;
+}
+
+// Renders a seat's contents from its current state: its row/seat code (or
+// the ✈ pilot badge) when open, or a small lettered medallion with the
+// guest's first name once it's booked — so a booked seat is identifiable
+// at a glance, not just marked "taken".
+function renderSeatContent(el){
+  const id = el.dataset.id;
+  const data = seatState[id];
+  const isMine = id === state.seatId;
+  const bookedName = isMine ? state.name : (data && data.name);
+  if(bookedName){
+    const initial = bookedName.trim().charAt(0).toUpperCase() || '?';
+    const firstName = bookedName.trim().split(/\s+/)[0];
+    el.innerHTML =
+      '<span class="seat-initial">'+initial+'</span>'+
+      '<span class="seat-firstname">'+firstName+'</span>';
+  } else if(el.dataset.pilotLabel){
+    el.innerHTML =
+      '<span style="display:block;font-size:13px;line-height:1">✈</span>'+
+      '<span style="display:block;font-size:6.5px;letter-spacing:.04em;margin-top:3px;white-space:nowrap">'+el.dataset.pilotLabel+'</span>';
+  } else {
+    el.innerHTML = '<span class="seat-code">'+el.dataset.label+'</span>';
+  }
 }
 
 function renderSeatMap(){
@@ -500,13 +540,14 @@ function applySeatStateToDom(){
     el.classList.remove('taken','mine');
     if(id === state.seatId){
       el.classList.add('mine');
-      el.title = state.confirmed ? 'Your seat' : 'Your seat (not confirmed yet)';
+      el.title = state.confirmed ? ('Your seat — ' + state.name) : 'Your seat (not confirmed yet)';
     } else if(data && data.name){
       el.classList.add('taken');
       el.title = 'Reserved by ' + data.name;
     } else {
-      el.title = 'Available';
+      el.title = el.dataset.pilotLabel ? (el.dataset.pilotLabel + "'s seat") : 'Available';
     }
+    renderSeatContent(el);
   });
 }
 
