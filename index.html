@@ -395,7 +395,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 const STEPS = ["landing","flight","name","seat","pass","invite"];
-const state = { flightTime: null, name: "", seatId: null, seatSide: null };
+const state = { flightTime: null, name: "", seatId: null, seatSide: null, confirmed: false };
 
 function goTo(step){
   STEPS.forEach(function(s){
@@ -498,9 +498,12 @@ function applySeatStateToDom(){
     const id = el.dataset.id;
     const data = seatState[id];
     el.classList.remove('taken','mine');
-    if(data && data.name){
-      if(id === state.seatId){ el.classList.add('mine'); el.title = 'Your seat'; }
-      else { el.classList.add('taken'); el.title = 'Reserved by ' + data.name; }
+    if(id === state.seatId){
+      el.classList.add('mine');
+      el.title = state.confirmed ? 'Your seat' : 'Your seat (not confirmed yet)';
+    } else if(data && data.name){
+      el.classList.add('taken');
+      el.title = 'Reserved by ' + data.name;
     } else {
       el.title = 'Available';
     }
@@ -526,6 +529,9 @@ function seatLabel(id){
   return rowNum + seatLetter;
 }
 
+// Selecting a seat is LOCAL ONLY — nothing is written to Firestore yet,
+// so a guest can tap around and change their mind freely. The seat is only
+// actually reserved (for everyone) when they press "Issue My Pass".
 function trySelectSeat(id, side){
   if(state.seatId === id) return;
   const existing = seatState[id];
@@ -534,17 +540,12 @@ function trySelectSeat(id, side){
     seatNote.className = 'seat-note err';
     return;
   }
-  seatNote.textContent = 'Reserving your seat...';
-  seatNote.className = 'seat-note';
-  claimSeat(id, side);
-}
-
-function onSeatClaimed(id, side){
   state.seatId = id;
   state.seatSide = side;
+  state.confirmed = false;
   applySeatStateToDom();
   const sideLabel = side==='aya' ? "Aya's side" : "Youssef's side";
-  seatNote.textContent = 'Seat '+seatLabel(id)+' reserved — '+sideLabel+' ✓';
+  seatNote.textContent = 'Seat '+seatLabel(id)+' selected — '+sideLabel+'. Tap "Issue My Pass" to confirm.';
   seatNote.className = 'seat-note ok';
   document.getElementById('btn-seat-next').disabled = false;
 }
@@ -559,13 +560,16 @@ function setSync(ok, label){
   syncLabel.textContent = label;
 }
 
-function localOnlyFallback(id, side){
-  seatState[id] = {name: state.name, flightTime: state.flightTime};
-  onSeatClaimed(id, side);
-}
-
-async function claimSeat(id, side){
-  if(!dbFs){ localOnlyFallback(id, side); return; }
+// Called only when the guest presses "Issue My Pass". Returns true on
+// success (seat is now locked in for everyone), false if it was taken by
+// someone else in the meantime — in which case the caller should bounce
+// the guest back to the seat map to pick again.
+async function confirmSeat(id, side){
+  if(!dbFs){
+    seatState[id] = {name: state.name, flightTime: state.flightTime};
+    state.confirmed = true;
+    return true;
+  }
   try{
     const ref = doc(dbFs, 'seats', id);
     await runTransaction(dbFs, async (tx) => {
@@ -575,15 +579,14 @@ async function claimSeat(id, side){
       }
       tx.set(ref, {name: state.name, flightTime: state.flightTime, side: side, ts: Date.now()});
     });
-    onSeatClaimed(id, side);
+    state.confirmed = true;
+    return true;
   }catch(e){
-    if(e && e.code === 'taken'){
-      seatNote.textContent = 'That seat is already reserved — try another one';
-      seatNote.className = 'seat-note err';
-    } else {
-      // Firestore unreachable / misconfigured — keep the page usable anyway
-      localOnlyFallback(id, side);
-    }
+    if(e && e.code === 'taken'){ return false; }
+    // Firestore unreachable / misconfigured — keep the page usable anyway
+    seatState[id] = {name: state.name, flightTime: state.flightTime};
+    state.confirmed = true;
+    return true;
   }
 }
 
@@ -602,6 +605,18 @@ function initFirebase(){
         if(v){ next[d.id] = {name: v.name, flightTime: v.flightTime}; }
       });
       seatState = next;
+      // If the guest has a seat picked but not yet confirmed, and someone
+      // else just locked it in first, bounce them back to pick another.
+      if(state.seatId && !state.confirmed){
+        const taken = seatState[state.seatId];
+        if(taken && taken.name && taken.name !== state.name){
+          state.seatId = null;
+          state.seatSide = null;
+          seatNote.textContent = 'Someone just took that seat — pick another one';
+          seatNote.className = 'seat-note err';
+          document.getElementById('btn-seat-next').disabled = true;
+        }
+      }
       applySeatStateToDom();
       flightCountsFromState();
       setSync(true, "Live — synced with all guests");
@@ -614,7 +629,23 @@ function initFirebase(){
 }
 initFirebase();
 
-document.getElementById('btn-seat-next').addEventListener('click', function(){
+document.getElementById('btn-seat-next').addEventListener('click', async function(){
+  const nextBtn = document.getElementById('btn-seat-next');
+  if(!state.seatId || state.confirmed) return;
+  nextBtn.disabled = true;
+  seatNote.textContent = 'Confirming your seat...';
+  seatNote.className = 'seat-note';
+  const ok = await confirmSeat(state.seatId, state.seatSide);
+  if(!ok){
+    seatNote.textContent = 'That seat was just taken — pick another one';
+    seatNote.className = 'seat-note err';
+    state.seatId = null;
+    state.seatSide = null;
+    applySeatStateToDom();
+    nextBtn.disabled = true;
+    return;
+  }
+  applySeatStateToDom();
   document.getElementById('pass-name').textContent = state.name;
   document.getElementById('pass-seat').textContent = seatLabel(state.seatId) + ' · ' + (state.seatSide==='aya' ? 'Aya' : 'Youssef');
   document.getElementById('pass-time').textContent = state.flightTime;
